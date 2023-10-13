@@ -1,0 +1,969 @@
+---
+title: "Trends in the academic achievement gap between secondary students: The case of Brazil"
+output:
+  pdf_document: default
+
+ 
+---
+# Introduction
+
+This document is the second reporting version of the replication of the paper, [(link here)](https://linkinghub.elsevier.com/retrieve/pii/S0738059322001006), which explores gaps in Brazilian elementary school. Here, the focus is on Brazilian secondary education. We carried out trend analysis of *socioeconomic inequality* for the 10th and 90th percentiles and 25th and 75th percentiles. Additionally, we analyzed the gaps between *white and non-white students.*
+
+The data is from the ENEM and School Census from 2009 to 2019. The ENEM had, on average, six million students per year. However, only a part of that was considered:
+
+(1) Students who did not assign a school were removed.
+(2) Students who did not attend the last secondary year of municipal or state public schools.
+(3) Students who did not follow a regular curriculum.
+(4) As a double-check, students not in the most probable age range for criteria 1 and 2 (17-19 years old) were also discarded.
+(5) In order to obtain a critical mass, only schools with ten or more students were selected.
+(6) To ensure that all schools had at least a minimum infrastructure in order to function, students who attend schools with no electric energy, sanitation, or piped water were discarded.
+(7) Students who assigned schools at ENEM in year Y, and their schools do not assigned students enrollments in the 10th grade two years before.
+
+
+```{r setup, include=FALSE}
+library(broom)
+library(tidyr)
+library(dplyr)
+library(pROC)
+library(caret)
+library(stringr)
+library(sf)
+library(DescTools)
+library(Jmisc)
+library(envalysis)
+library(recipes)
+library(feather)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(glmnet)
+library(kableExtra)
+library(stargazer)
+library(ggrepel)
+library(gridExtra)
+options(tibble.print_max = Inf)
+set.seed(123)
+
+knitr::opts_chunk$set(echo = F, warning = FALSE, message = FALSE)
+```
+
+```{r}
+#Reading and filtering data
+#notas <-read.csv("~/projects/panel/features_engineering/ALL_STUDENTS_v2.csv")%>%select(-Unnamed..0)
+#notas<- notas%>%filter(IN_TP_ESCOLA== 'Municipal+Estadual')
+#mun <- read.csv("~/data/geodata/municipios.csv")%>%select(cod_municipio)
+#uf<-read.csv("~/data/geodata/estados.csv")%>%select(cod, codigo_uf)
+####
+#notas<- left_join(notas, mun, by = c("CO_MUNICIPIO" = "cod_municipio"))
+#notas<- left_join(notas, uf, by = c("CO_UF" = "cod"))
+#pib<- read.csv("~/data/FNDE/2019/municipio.csv")
+#notas<- inner_join(notas, pib%>%select(ano, id_municipio, pib), by = c("CO_ANO" = #"ano","CO_MUNICIPIO" = "id_municipio"))
+#write_feather(notas, "~/projects/panel/features_engineering/notas.feather")
+df <- read_feather("~/projects/panel/features_engineering/notas.feather")
+mesogeo <- ("~/data/geodata/mesorregiao.json") %>%
+    st_read()
+mesogeo<- st_set_geometry(mesogeo, NULL)%>%select(REGIAO, UF)%>%distinct_all()
+df<-left_join(df, mesogeo, by = c("codigo_uf" = "UF"))
+#head(df)
+```
+
+## Basic descriptive analysis
+
+The graphs below show the number of students, schools and municipalities over time. 
+
+```{r,out.width="50%"}
+#df<-notas
+print(paste("Number of observations:",nrow(df)))
+data1<-df%>%group_by(CO_ANO)%>%summarise(Nzao =n())
+data2<-df%>%group_by(CO_ANO, RENDA_MENSAL)%>%summarise(Nzin =n())
+ggplot() + 
+     geom_bar(data =data2,aes(fill=as.factor(RENDA_MENSAL), y=Nzin, x=as.factor(CO_ANO)),position="fill", stat="identity")+
+     geom_line(data =data1,aes(x= as.factor(CO_ANO),y=Nzao/1000000), size = 1.5, color="red", group=1)+theme_publish()+
+  scale_y_continuous(sec.axis = sec_axis(~.*1000000, name = "Enrollments"))+
+  theme(
+    axis.title.y = element_text(color = "black", size=13),
+    axis.title.y.right = element_text(color = "red", size=13))+
+  xlab("")+ylab("Fraction by social class")+
+  scale_fill_discrete(name="Income (minimum wage)", labels = c("Zero", "Up one", "One- Two", "Two-Five", "Five-Ten", "Above Ten"))
+
+data1<-df%>%group_by(CO_ANO)%>%summarise(Nzao =n())
+data2<-df%>%group_by(CO_ANO, TP_COR_RACA)%>%summarise(Nzin =n())
+ggplot() + 
+     geom_bar(data =data2,aes(fill=as.factor(TP_COR_RACA), y=Nzin, x=as.factor(CO_ANO)),position="fill", stat="identity")+
+     geom_line(data =data1,aes(x= as.factor(CO_ANO),y=Nzao/1000000), size = 1.5, color="red", group=1)+theme_publish()+
+  scale_y_continuous(sec.axis = sec_axis(~.*1000000, name = "Enrollments"))+
+  theme(
+    axis.title.y = element_text(color = "black", size=13),
+    axis.title.y.right = element_text(color = "red", size=13))+
+  xlab("")+ylab("Fraction by race")+
+  scale_fill_discrete(name="Race", labels = c("Non_declared", "White", "Black", "Brown", "Yellow", "Indigenous"))
+
+
+data1<-df%>%group_by(CO_ANO)%>%summarise(Nzao =n())
+data2<-df%>%group_by(CO_ANO, TP_SEXO)%>%summarise(Nzin =n())
+ggplot() + 
+     geom_bar(data =data2,aes(fill=as.factor(TP_SEXO), y=Nzin, x=as.factor(CO_ANO)),position="fill", stat="identity")+
+     geom_line(data =data1,aes(x= as.factor(CO_ANO),y=Nzao/1000000), size = 1.5, color="red", group=1)+theme_publish()+
+  scale_y_continuous(sec.axis = sec_axis(~.*1000000, name = "Enrollments"))+
+  theme(
+    axis.title.y = element_text(color = "black", size=13),
+    axis.title.y.right = element_text(color = "red", size=13))+
+  xlab("")+ylab("Fraction by gender")+
+  scale_fill_discrete(name="Gender", labels = c("M", "F"))
+
+
+```
+
+We can observe in the above graph a significant difference in the number of ENEM enrollments over time. Several reasons can drive these differences, and further studies will be important to bring some clues in this aspect. Beyond the differences in the students' enrollments, the graphs also illustrate slight differences in groups' composition (social class and race) over time, which can introduce bias to our inequality analysis. There are fewer white and wealthy people attending the exam throughout the time.
+
+To better illustrate these aspects, it will be important to evaluate the drop-out rate in schools. Although it is not possible to accurately measure it in the available dataset, we approximate it by using the ratio of the number of students in an underlying school in the year of ENEM by the number of students in this same school at the 10th grade two years earlier. It is important to note that there are no guarantees that the students enrolled in schools attended the exam, since it is not possible to join ENEM and Census at the student level.
+
+The Figure below illustrates the distribution of the drop-out rate by schools. The rate is higher, with the average close to 0.4. Interestingly, the distribution is very similar over the years and does not seem to be correlated with the decreasing rates of ENEM attendance.
+
+
+```{r, fig.show="hold", out.width="70%", fig.align = 'center'}
+# Creating school level variables:
+df <- df%>%group_by(CO_ANO, CO_ESCOLA)%>%
+  mutate(AVG_INCOME_SCHOOL = mean(RENDA_PERCAPITA))
+
+## Ratio of White/non-white students have attended ENEM -
+df$TP_COR_RACA<-if_else(df$TP_COR_RACA %in% c(1,4), 1, 0)
+df<- df%>%group_by(CO_ANO, CO_ESCOLA, TP_COR_RACA)%>%
+  mutate(n=n())%>%ungroup()%>%
+  group_by(CO_ANO, CO_ESCOLA)%>%
+  mutate(PROP_RACE_ENEM = n/sum(n))%>%select(-n)
+           
+## Creating ratio 12th by 10th for White/non-white (lag 2)
+df1<- read.csv("~/data/censo/extracted_data_25.csv") # Students from 10th grade
+df1$raca_cor<-if_else(df1$raca_cor %in% c(1, 4), 1, 0)
+df1<-df1%>%group_by(ano,id_escola, raca_cor)%>%
+  summarise(QT_matricula = sum(QT_matricula))%>%ungroup()
+df1<-df1%>%pivot_wider(names_from=raca_cor, values_from = QT_matricula, , names_prefix="raca_cor_", values_fill = 0)
+df1<-df1%>%group_by(id_escola)%>%mutate(lag_25_0= lag(raca_cor_0, 2, order_by=ano, default =0),
+                                        lag_25_1= lag(raca_cor_1, 2, order_by=ano, default=0))%>%ungroup()%>%
+  select(-c(raca_cor_0, raca_cor_1))
+df1<-df1%>%filter(ano>2008 & ano < 2020)
+df1<-df1%>%filter(!(lag_25_0==0 & lag_25_1 == 0)) # drop schools whtiout students assigned two years early
+
+##Students from 12th grade by race
+df2<- read.csv("~/data/censo/extracted_data_27.csv")
+df2<-df2%>%filter(ano>2008 & ano < 2020)
+df2$raca_cor<-if_else(df2$raca_cor %in% c(1, 4), 1, 0)
+df2<-df2%>%group_by(ano,id_escola, raca_cor)%>%
+  summarise(QT_matricula = sum(QT_matricula))
+df2<-df2%>%pivot_wider(values_from = QT_matricula, names_from=raca_cor, names_prefix="QT_raca_cor_", values_fill=0)
+
+df1_df2<-df1%>%inner_join(df2, by=c("id_escola"="id_escola", "ano"="ano"))
+
+#Vizualizing drop-of regardless of race
+p<- df1_df2%>%mutate(QT_MAT_10_LAG2 = lag_25_0 +lag_25_1, QT_MAT_12 = QT_raca_cor_0 + QT_raca_cor_1, DROP_OUT = ((QT_MAT_12/QT_MAT_10_LAG2)-1)*-1)%>%select(c(ano, id_escola,QT_MAT_10_LAG2 ,QT_MAT_12, DROP_OUT))
+
+df_school<- df%>%group_by(CO_ANO,CO_ESCOLA)%>%summarise(n())%>%distinct_all()%>%ungroup()
+p<-p%>%inner_join(df_school,by=c("id_escola"="CO_ESCOLA", "ano"="CO_ANO"))
+p$DROP_OUT<- if_else(p$DROP_OUT < quantile(p$DROP_OUT, c(0.01))[[1]], quantile(p$DROP_OUT, c(0.01))[[1]],p$DROP_OUT )
+p1<-ggplot(p, aes(x = DROP_OUT, group = ano, color = as.character(ano))) + geom_density()+
+    theme(
+        axis.title.y = element_text(color = "black", size=13),
+        axis.title.y.right = element_text(color = "red", size=13), 
+        legend.title = element_blank())+
+    xlab("Distribution of drop-outs (12th/10th(year-2)) by schools percentis[0.01 -1]")+ylab("Density")
+
+p1
+```
+
+To depict this scenario and better understand if this high drop-out rate among schools is a threat to our inequality analysis, the graph below illustrates the distribution by race (white/non-white)
+
+```{r, fig.show="hold", out.width="50%"}
+##Computing the ratio 
+df1_df2<- df1_df2%>%mutate(
+  DROP_OUT_WHITE = case_when(
+    lag_25_1 == 0 ~ (QT_raca_cor_1-1)*-1,
+    TRUE ~ (QT_raca_cor_1/lag_25_1)-1)*-1
+  )
+df1_df2<- df1_df2%>%mutate(
+  DROP_OUT_NON_WHITE = case_when(
+    lag_25_0 == 0 ~ (QT_raca_cor_0-1)*-1,
+    TRUE ~ (QT_raca_cor_0/lag_25_0)-1)*-1
+  )
+  
+df1_df2<-df1_df2%>%select(-c(lag_25_0, lag_25_1,QT_raca_cor_0, QT_raca_cor_1))
+ 
+#Vizualize
+p<-df1_df2%>%inner_join(df_school,by=c("id_escola"="CO_ESCOLA", "ano"="CO_ANO"))
+#Outliers
+p$DROP_OUT_WHITE<- if_else(p$DROP_OUT_WHITE < quantile(p$DROP_OUT_WHITE, c(0.05))[[1]], quantile(p$DROP_OUT_WHITE, c(0.05))[[1]],p$DROP_OUT_WHITE )
+p$DROP_OUT_WHITE<- if_else(p$DROP_OUT_WHITE > quantile(p$DROP_OUT_WHITE, c(0.99))[[1]], quantile(p$DROP_OUT_WHITE, c(0.99))[[1]],p$DROP_OUT_WHITE )
+p1<-ggplot(p, aes(x = DROP_OUT_WHITE, group = ano, color = ano)) + geom_density()+
+    theme(
+        axis.title.y = element_text(color = "black", size=13),
+        axis.title.y.right = element_text(color = "red", size=13),
+        legend.title = element_blank())+
+    xlab("Distribution of white student drop-outs by school - percentis [0.05 - 0.99]")+ylab("Density")
+
+
+p$DROP_OUT_NON_WHITE<- if_else(p$DROP_OUT_NON_WHITE < quantile(p$DROP_OUT_NON_WHITE, c(0.05))[[1]], quantile(p$DROP_OUT_NON_WHITE, c(0.05))[[1]],p$DROP_OUT_NON_WHITE )
+p$DROP_OUT_NON_WHITE<- if_else(p$DROP_OUT_NON_WHITE > quantile(p$DROP_OUT_NON_WHITE, c(0.99))[[1]], quantile(p$DROP_OUT_NON_WHITE, c(0.99))[[1]],p$DROP_OUT_NON_WHITE )
+p2<-ggplot(p, aes(x = DROP_OUT_NON_WHITE, group = ano, color = ano)) + geom_density()+
+    theme(
+        axis.title.y = element_text(color = "black", size=13),
+        axis.title.y.right = element_text(color = "red", size=13),
+        legend.title = element_blank())+
+    xlab("Distribution of non-white students drop-outs by schools - percentis [0.05 - 0.99]")+ylab("Density")
+
+
+#Incorporating the new features
+df<-df%>%inner_join(df1_df2, by=c("CO_ESCOLA"="id_escola", "CO_ANO"="ano"))%>%ungroup()
+#write_feather(df, "~/projects/panel/features_engineering/df.feather")
+#df <- read_feather("~/projects/panel/features_engineering/df.feather")
+p1
+p2
+```
+
+Equity as equal achievement:
+```{r}
+normalize_df <- function(df, cols) {
+  # Identify the numeric columns in the data frame
+  #numeric_cols <- sapply(df, is.numeric)
+  # Normalize the numeric columns to the range between 0 and 1
+  df[cols] <- apply(df[cols], 2, function(x) {
+    (scale(x) - min(scale(x))) / (max(scale(x)) - min(scale(x)))
+  })
+  
+  return(df)
+}
+
+
+var <- df%>%group_by(CO_ANO, REGIAO)%>%summarise(BST = sd(NU_NOTA_GERAL))
+var$WS<-df%>%group_by(CO_ANO, CO_ESCOLA, REGIAO)%>%summarise(var = sd(NU_NOTA_GERAL))%>%group_by(CO_ANO, REGIAO)%>%summarise(sum_var = sum(var))%>%pull(sum_var)
+var$BSH<- df%>%group_by(CO_ANO, CO_ESCOLA, REGIAO)%>%summarise(nota = mean(NU_NOTA_GERAL))%>%group_by(CO_ANO, REGIAO)%>%summarise(var = sd(nota))%>%pull(var)
+var$ICC<- var$BSH/(var$WS + var$BSH)
+cols=colnames(var)[colnames(var)!= c("CO_ANO", "REGIAO")]
+
+var_normalized<- normalize_df(var, cols)
+var_normalized<-var_normalized%>%select(-WS)
+
+## SocioEconomic and Race proportion by race in 2019
+
+
+var_long <- var_normalized%>%ungroup() %>% 
+  gather(key = "Variables", value = "value", 3:5)
+
+
+ggplot(var_long, aes(x = as.character(CO_ANO), y = value, group = REGIAO, color= REGIAO)) +
+  theme(plot.width = 8, plot.height = 6)+
+  geom_line() +
+  facet_grid(Variables ~ ., scales = "free_y") +
+  theme_bw()+
+  scale_color_discrete(labels = c("Midwest", "Northeast", "North", "Southeast","South"))+
+  labs(color ="")+
+  xlab("") +
+  ylab("")
+
+
+#print("average ", mean(var))
+```
+
+Interestingly, differently from ENEM attendance, the drop-out rate seems to be higher for non-white students. Despite appearing to have a downward trend with older years represented by darker colors, non-white students have a median higher than 0.25. White students, on the other hand, have a central tendency lower than 0.25 but show an upward trend with darker colors above the median.
+
+Contrary to the well-known literature that white students tend to persist in school and perform better, these trends in school drop-out and ENEM attendance rates are contradictory. Therefore, a plausible explanation for this fluctuation is the changes in the behavior of students when self-declaring race, as recently pointed out by an INEP researcher. The author was able to identify students who attended ENEM longitudinally (using student ID) and detected a tendency of white students self-declaring as non-white over time
+
+## Selecting variables
+
+The original study goes beyond previous research that uses traditional statistical analysis by considering a wider range of variables in the modeling process.
+
+The variables are classified into the following groups:
+
+Variables of interest:
+  (1) Student's race (White == 1 and Non-white = 0)
+  (2) SES index (Bottom and top quantiles)
+
+Student-level:
+  (3) Student's age, gender, and parent's education
+
+School-level:
+  (4) School infrastructure and teacher information (most of the teacher features were created using available data and were not present in the original dataset)
+  (5) Average SES
+  (7) Proportion of White students who have attended ENEM
+  (8) Estimation of the fraction of students who have dropped out from 12th/10th (by race)
+
+Fixed-effects:
+  (8) States
+  (9) Municipalities (only GDP*)
+
+Note: I couldn't find the additional information about municipalities on the IPEA website as cited in the paper. I could download from SINCOFI the expenditures in education. However, the expenditures are not available for all municipalities, only for a sample. Also, there are no guarantees that the education level, specifically the informed budget, targets this work since they only inform expenditures for Basic Education, which encompasses from 1st to 12th grades. The majority of this informed expenditure is probably out of scope of this work, since municipalities are responsible for education above the 10th grade (secondary education).
+  
+#### Variables
+
+Below, we can see all the independent variables that will be added in a step-wise feature selection process by groups. They have a suggestive Portuguese names. The School_Teacher features will go through an additional feature selection in the Lasso step as further explained in the methodology section. This will ensure that we are only considering the most relevant features in our analysis, which will ultimately improve the accuracy of our results.
+
+
+```{r, echo=TRUE}
+features<- 
+  list(
+    student_features =c('NU_IDADE'),
+    gender = c('TP_SEXO'),
+    average_ses_school = ("AVG_INCOME_SCHOOL"),
+    school_teacher = c(
+  'IN_LABORATORIO_INFORMATICA',
+  'IN_LABORATORIO_CIENCIAS',
+  'IN_SALA_ATENDIMENTO_ESPECIAL',
+  'IN_BIBLIOTECA',
+  'IN_SALA_LEITURA',
+  'IN_BANHEIRO',
+  'IN_BANHEIRO_PNE',
+  'QT_SALAS_UTILIZADAS',
+  'QT_EQUIP_TV',
+  'QT_EQUIP_DVD',
+  'QT_EQUIP_COPIADORA',
+  'QT_EQUIP_IMPRESSORA',
+  'QT_COMP_ALUNO',
+  'IN_BANDA_LARGA',
+  'QT_FUNCIONARIOS',
+  'IN_ALIMENTACAO',
+  'IN_COMUM_MEDIO_MEDIO',
+  'IN_COMUM_MEDIO_INTEGRADO',
+  'IN_COMUM_MEDIO_NORMAL',
+  'IN_SALA_PROFESSOR',
+  'IN_COZINHA',
+  'IN_EQUIP_PARABOLICA',
+  'IN_QUADRA_ESPORTES',
+  'IN_ATIV_COMPLEMENTAR',
+  'QT_MATRICULAS' ,
+  'TITULACAO', 
+  'IN_FORM_DOCENTE',
+  'NU_LICENCIADOS', 
+  'NU_CIENCIA_NATUREZA','NU_CIENCIAS_HUMANAS', 'NU_LINGUAGENS_CODIGOS', 
+  'NU_ESCOLAS', 'DIVERSIDADE' ,'NU_MATEMATICA'),
+
+drop_out = c( "PROP_RACE_ENEM", "DROP_OUT_NON_WHITE","DROP_OUT_WHITE"),
+
+municipal_economics= c("pib"),
+
+
+state_fixed_effects= (sort(unique(df$codigo_uf))[-26]) #SP as reference state
+)
+
+```
+
+# Methodology
+
+The main methodology of the original paper follows three steps:
+
+(1) Selection of items that will be part of our socioeconomic measure.
+(2) Generation of an index indicating the socioeconomic status of each student in each of the eleven test years, 2009-2019.
+(3) Estimation of the test score gap between low and high socioeconomic-status students and its trajectory over the period 2009-2019.
+
+This paper adds the analysis of racial inequality, requiring the addition of step 3 in the context of race. Specifically, a dichotomous race variable was created to estimate the gaps between white (white and yellow) and non-white students (black, brown, indigenous and non-declared) over time.
+
+## Constructing the socioeconomic measure (INSE)
+
+Let's begin with the index of student socioeconomic status (INSE). Unlike the original paper, possessions are not available to include in the index. This information is not present in the ENEM questionnaires for all years and was removed. The socioeconomic variables available are: 'RENDA_PERCAPITA', 'EDU_PAI', 'EDU_MAE' for educational performance. The extent of variance explained in the first component and how the three variables share it indicate that these variables are a good indication of SES. The PCA was performed using the same data as the models.
+
+#### PCA as prooxy to INSE 
+
+The PCA is built on Income and parent´s education
+
+```{r}
+features_pca = c('RENDA_PERCAPITA',  'EDU_PAI', 'EDU_MAE')
+df<- df%>%ungroup()
+pca <- prcomp(df%>%select(features_pca), scale = TRUE)
+df$INSE <- pca$x[,1]
+df$INSE <- df$INSE
+print(summary(pca))
+print("================================================")
+pca$rotation
+
+rm("pca")
+```
+
+## Identifying low and high SES students by year 
+
+The second step seeks to identify the low and high-SES students. Following prior work, the tail of the distribution was used in two settings (10 and 25 percentiles). 
+
+```{r include=FALSE}
+df<-df%>%group_by(CO_ANO)%>%mutate(
+  SES_LEVEL_10 = ntile(INSE, 10),
+  SES_LEVEL_25 = ntile(INSE, 4))%>%mutate(
+  SES_LEVEL_10 = if_else(SES_LEVEL_10==10, 1, 0),
+  SES_LEVEL_25 = if_else(SES_LEVEL_25==4, 1, 0))%>%ungroup()
+
+df%>%group_by(CO_ANO)%>%summarise(mean(SES_LEVEL_10), mean(SES_LEVEL_25))
+
+```
+
+### Double-check PCA  
+Let's take a look at the simple average of the PCA features for those in the upper and lower quartiles of the INSE. It is expected that those in the upper quartile (SES_LEVEL_25) will have higher averages. Just to not waste the table code, we added some variables in the school level to ge insights.
+
+
+
+```{r echo=FALSE}
+kable(rbind(df%>%filter(SES_LEVEL_25==1)%>%summarize(Income = mean(RENDA_PERCAPITA), Father_EDU = mean(EDU_PAI), Mother_EDU = mean(EDU_MAE), Titulacao = mean(TITULACAO), Computador = mean(QT_COMP_ALUNO), Bilblioteca = mean(IN_BIBLIOTECA),pib = round(mean(pib)/10000000000,2),SES_LEVEL_25=1),
+
+df%>%filter(SES_LEVEL_25==0)%>%summarize(Income = mean(RENDA_PERCAPITA), Father_EDU = mean(EDU_PAI), Mother_EDU = mean(EDU_MAE), Titulacao = mean(TITULACAO), Computador = mean(QT_COMP_ALUNO),Bilblioteca = mean(IN_BIBLIOTECA),pib = round(mean(pib)/10000000000,2),SES_LEVEL_25=0)), "simple")
+
+```
+
+## Lasso
+The Lasso method was used to select features related to schools and teachers. The School Census data contains a lot of information about schools, but it is not clear which variables are most important for academic performance. The use of Lasso in this paper is an interesting contribution compared to previous educational research. Due to computational limitations, Lasso was applied only to a random sample of the data, which made up 20% of the total data. The best lambda value was chosen through a 5-fold cross-validation process using the Glmnet package.
+
+18 variables were discarded because their coefficients were greater than 0.001. The remaining features related to schools (including teachers) are:
+
+```{r eval=FALSE, include=FALSE}
+sample_fraction <- 0.2
+# Randomly sample the data
+sampled_data <- sample_frac(df, sample_fraction)
+
+lasso_features<- c(features[[4]])
+
+pp = preProcess(sampled_data%>%select(c(lasso_features, "NU_NOTA_GERAL")), method = c("center", "scale"))
+lasso <- predict(pp, df%>%select(c(lasso_features, "NU_NOTA_GERAL")))
+x = as.matrix(lasso%>%select(-NU_NOTA_GERAL))
+y = lasso$NU_NOTA_GERAL
+model <- cv.glmnet(x, y, alpha = 1, type.measure = "mse")
+lasso_features<-rownames(coef(model, s = 'lambda.min'))[coef(model, s = 'lambda.min')[,1]>0.001][-1] 
+
+#update variables list
+features[[4]] <-lasso_features
+
+save(lasso_features, file = "lasso_features.RData")
+#load("lasso_features.RData")
+print(lasso_features)
+#rm("lasso")
+#rm("x")
+#rm("y")
+#rm("reg")
+
+
+```
+
+```{r echo=FALSE}
+load("lasso_features.RData")
+#update variables list
+features[[4]] <-lasso_features
+print(lasso_features)
+
+```
+
+# Explaining trends in achievement inequality
+
+The last part of the methodology is the modeling itself. Unlike the paper, which separately analyzed performance in Portuguese and Math due to the specifics of Brazilian elementary assessment, this analysis uses overall student performance as measured by the ENEM, which encompasses four tests beyond the essay. The use of average performance has been extensively used in prior works.
+
+Following the paper, the first year was considered as a reference and all data (except dummy variables) was standardized (scaled and centered) based on the 2009 distribution. In regards to the state-level fixed-effects, the state of São Paulo was chosen as the reference state.
+
+```{r include=FALSE}
+
+#standardize all data regardin 2009. It is important to take off binary variables, since make no sense scale them.
+
+check_binary<- function(vector){
+  (length(unique(vector)) <= 2) 
+}
+
+#state fixed effects 
+df<- fastDummies::dummy_cols(df, select_columns = "codigo_uf")
+names<-colnames(df%>%select(starts_with("codigo_uf_")))
+names<- (sort(names))[-26]
+df <- df %>% rename_at(vars(names), ~features[[7]])
+
+#standardization
+# get only features which will be used
+data<-df%>%select(unique(unlist(features)))
+data$NU_NOTA_GERAL <- df$NU_NOTA_GERAL
+# Among those features will be used, those that is not binary
+dummy = data[,sapply(data, check_binary)]
+# take out dummy variables of numeric list
+cols_numeric<- setdiff(unique(unlist(features)), colnames(dummy))
+cols_numeric<- append(cols_numeric, "NU_NOTA_GERAL")
+# take data from 2012 as a reference only for numerical features and prepreocess
+temp_2012<- df%>%filter(CO_ANO==2012)%>%select(cols_numeric)
+pp = preProcess(temp_2012, method = c("center", "scale"))
+
+numeric <- predict(pp, data%>%select(cols_numeric))
+data<- cbind(numeric, dummy)
+######rm("temp_cod")
+rm("dummy")
+rm("temp_2012")
+rm("numeric")
+rm("pp")
+
+
+save(data, file= "data.RData")
+#load("data.RData")
+
+```
+
+
+## Ecnomomic inequality
+First, we will explore the trends in economic inequality using the gap between "rich" (Higher INSE) and "poor" (Lower INSE) students.
+
+### Inequity across states
+```{r}
+p1<- df%>%filter(CO_ANO == 2019)%>%group_by(codigo_uf)%>%mutate(N=n(), n= sum(TP_COR_RACA), fraction1 = n/N)%>%ungroup()%>%mutate(quartile = ntile(NU_NOTA_GERAL, 4))%>%filter(quartile==4)%>%group_by(codigo_uf)%>%mutate(N2 = n(), n2 = sum(TP_COR_RACA) ,fraction2 =n2/N2,balance = fraction2/fraction1)%>%select(N, N2, n, n2, fraction1, fraction2, balance)%>%distinct_all()
+
+p2<- df%>%filter(CO_ANO == 2019)%>%group_by(codigo_uf)%>%mutate(N=n(), n= sum(SES_LEVEL_25), fraction1 = n/N)%>%ungroup()%>%mutate(quartile = ntile(NU_NOTA_GERAL, 4))%>%filter(quartile==4)%>%group_by(codigo_uf)%>%mutate(N2 = n(), n2 = sum(SES_LEVEL_25) ,fraction2 =n2/N2,balance = fraction2/fraction1)%>%select(N, N2, n, n2, fraction1, fraction2, balance)%>%distinct_all()
+
+
+p1<- p1[order(p1$balance),]
+p2<- p2[order(p2$balance),]
+
+cor = cor.test(as.integer(factor(p1$codigo_uf)), as.integer(factor(p2$codigo_uf)), method = "spearman")
+p1<-ggplot(p1, aes(x = balance, y = codigo_uf)) +
+  theme(plot.width = 8, plot.height = 6)+
+  geom_bar(stat = "identity", width=0.6) +
+  geom_vline(xintercept = 1, color = "red", linetype = "dashed")+
+  geom_vline(xintercept = mean(p1$balance), color = "blue", linetype = "dashed")+
+  labs(x = "(a) - White", y="") +
+  theme_minimal() +
+  scale_y_discrete(limits = rev(p1$codigo_uf))  
+
+p2<-ggplot(p2, aes(x = balance, y = codigo_uf)) +
+  theme(plot.width = 8, plot.height = 6)+
+  geom_bar(stat = "identity", width=0.6) +
+  geom_vline(xintercept = 1, color = "red", linetype = "dashed")+
+  geom_vline(xintercept = mean(p2$balance), color = "blue", linetype = "dashed")+
+  labs(x = "(b) - Higher SES", y="") +
+  theme_minimal() +
+  scale_y_discrete(limits = rev(p2$codigo_uf)) 
+
+#p1
+#p2
+
+grid.arrange(p1, p2, ncol = 2)
+
+
+```
+
+```{r}
+
+
+
+p1<- df%>%group_by(CO_ANO,REGIAO)%>%mutate(N=n(), n= sum(SES_LEVEL_25), fraction1 = n/N)%>%ungroup()%>%mutate(quartile = ntile(NU_NOTA_GERAL, 4))%>%filter(quartile==4)%>%group_by(CO_ANO, REGIAO)%>%mutate(N2 = n(), n2 = sum(SES_LEVEL_25) ,fraction2 =n2/N2,balance = fraction2/fraction1)%>%select(N, N2, n, n2, fraction1, fraction2, balance)%>%distinct_all()
+
+p2<- df%>%group_by(CO_ANO,REGIAO)%>%mutate(N=n(), n= sum(SES_LEVEL_10), fraction1 = n/N)%>%ungroup()%>%mutate(quartile = ntile(NU_NOTA_GERAL, 4))%>%filter(quartile==4)%>%group_by(CO_ANO, REGIAO)%>%mutate(N2 = n(), n2 = sum(SES_LEVEL_10) ,fraction2 =n2/N2,balance = fraction2/fraction1)%>%select(N, N2, n, n2, fraction1, fraction2, balance)%>%distinct_all()
+
+p3<- df%>%group_by(CO_ANO,REGIAO)%>%mutate(N=n(), n= sum(TP_COR_RACA), fraction1 = n/N)%>%ungroup()%>%mutate(quartile = ntile(NU_NOTA_GERAL, 4))%>%filter(quartile==4)%>%group_by(CO_ANO, REGIAO)%>%mutate(N2 = n(), n2 = sum(TP_COR_RACA) ,fraction2 =n2/N2,balance = fraction2/fraction1)%>%select(N, N2, n, n2, fraction1, fraction2, balance)%>%distinct_all()
+
+
+
+p11<- p1%>%ggplot(aes(as.character(CO_ANO), balance, color=REGIAO))+geom_point()+geom_path(aes(group = REGIAO))+
+  labs(x = "", y="") +
+  theme_minimal()+theme(legend.position = "none")+
+  ggtitle("(c) 25/75th")
+p22<- p2%>%ggplot(aes(as.character(CO_ANO), balance, color=REGIAO))+geom_point()+geom_path(aes(group = REGIAO))+
+  labs(x = "", y="") +
+  theme_minimal()+theme(legend.position = "none")+
+  ggtitle("(c) 10/90th")
+p33<- p3%>%ggplot(aes(as.character(CO_ANO), balance, color=REGIAO))+geom_point()+geom_path(aes(group = REGIAO))+
+  labs(x = "", y="") +
+  theme_minimal()+
+  ggtitle("(c) White/non white")
+
+grid.arrange(p11, p22,p33, nrow = 3)
+
+```
+
+
+### Quantiles differences over time 
+
+On the above graph, we can observe the differences in achievement gaps over time. The gaps appear to be relatively stable (A), with slight seasonal trends. In more detail in Figure B, we can see an upward trend from 2010 to 2012, followed by a downward trend from 2014 to 2017, after which the gaps start to increase again.
+
+
+
+```{r, figures-side, fig.show="hold", out.width="50%"}
+limits<-df%>%group_by(CO_ANO, SES_LEVEL_10)%>%
+  summarise(avg_score = mean(NU_NOTA_GERAL))%>%pivot_wider(names_from=SES_LEVEL_10, values_from=avg_score, names_prefix= "avg_score_")
+
+
+# Plot the data
+p1<-ggplot(limits, aes(x = CO_ANO, y = avg_score_1)) +
+  geom_line(aes(color = "Top")) +
+  geom_line(aes(y = avg_score_0, color = "Bottom")) +
+  geom_segment(aes(x = CO_ANO, y = avg_score_0, yend = avg_score_1, xend = CO_ANO), color = "gray", size = 2) +
+  geom_text(aes(x = CO_ANO, y = (avg_score_0 + avg_score_1)/2, label = round(avg_score_1 - avg_score_0,2)), size = 3, hjust = 0, vjust = 0.5)+
+  scale_color_manual(name = "Income", values = c("Top" = "blue", "Bottom" = "red"))+
+  scale_x_continuous(breaks = unique(limits$CO_ANO), labels = unique(limits$CO_ANO))+
+  #scale_y_continuous(limits = c(450, 500))+
+  ggtitle(" (a) SES 10/90th percentiles") +
+  xlab("") +
+  ylab("") +
+  theme_classic()+ theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
+
+
+
+limits<-df%>%group_by(CO_ANO, SES_LEVEL_25)%>%
+  summarise(avg_score = mean(NU_NOTA_GERAL))%>%pivot_wider(names_from=SES_LEVEL_25, values_from=avg_score, names_prefix= "avg_score_")
+
+p2<-ggplot(limits, aes(x = CO_ANO, y = avg_score_1)) +
+  geom_line(aes(color = "Top")) +
+  geom_line(aes(y = avg_score_0, color = "Bottom")) +
+  geom_segment(aes(x = CO_ANO, y = avg_score_0, yend = avg_score_1, xend = CO_ANO), color = "gray", size = 2) +
+  geom_text(aes(x = CO_ANO, y = (avg_score_0 + avg_score_1)/2, label = round(avg_score_1 - avg_score_0,2)), size = 3, hjust = 0, vjust = 0.5)+
+  scale_color_manual(name = "Income", values = c("Top" = "blue", "Bottom" = "red"))+
+  scale_x_continuous(breaks = unique(limits$CO_ANO), labels = unique(limits$CO_ANO))+
+ # scale_y_continuous(limits = c(450, 500))+
+  ggtitle("(b) SES 25/75th percentiles") +
+  xlab("") +
+  ylab("") +
+  theme_classic()+ theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
+
+yleft = richtext_grob("Enem scores", rot=90)
+bottom = richtext_grob("Time")
+
+grid.arrange(p1, p2, nrow = 2, left = yleft, bottom = bottom )
+
+```
+
+## Race inequality
+Let's examine the trends in racial inequality by analyzing the achievement gap between white and non-white students. We will look at the difference in scores between these groups over time to gain insight into trends.
+
+### White vs Non-white differences over time 
+
+We can observe a quite similar pattern as the income trends, indicating a strong correlation between these variables. However, the decreasing trend for non-white students starts earlier in 2012 and persists until 2017.
+
+
+```{r, figures-sides, fig.show="hold", out.width="70%", fig.align = 'center'}
+limits<-df%>%group_by(CO_ANO, TP_COR_RACA)%>%
+  summarise(avg_score = mean(NU_NOTA_GERAL))%>%pivot_wider(names_from=TP_COR_RACA, values_from=avg_score, names_prefix= "tp_cor_raca_")
+
+ggplot(limits, aes(x = CO_ANO, y = tp_cor_raca_0)) +
+  geom_line(aes(color = "Non-white")) +
+  geom_line(aes(y = tp_cor_raca_1, color = "White")) +
+  geom_segment(aes(x = CO_ANO, y = tp_cor_raca_0, yend = tp_cor_raca_1, xend = CO_ANO), color = "gray", size = 2) +
+  geom_text(aes(x = CO_ANO, y = (tp_cor_raca_0 + tp_cor_raca_1)/2, label = round(tp_cor_raca_1 - tp_cor_raca_0,2)), size = 3, hjust = 0, vjust = 0.5)+
+  scale_color_manual(name = "Income", values = c("White" = "blue", "Non-White" = "red"))+
+  scale_x_continuous(breaks = unique(limits$CO_ANO), labels = unique(limits$CO_ANO))+
+  ggtitle("Gap between White and Non-White students  over time") +
+  xlab("Time") +
+  ylab("Enem scores") +
+  theme_classic()
+
+```
+
+## States differences
+
+The relation between gaps on average and INSE  by states for the whole period.
+ 
+```{r, fig.show="hold", out.width="50%"}
+df%>%group_by(codigo_uf, SES_LEVEL_10)%>%
+  summarise(score_mean= mean(NU_NOTA_GERAL), inse_mean = mean(INSE))%>%
+  ungroup()%>%
+  group_by(codigo_uf)%>%
+  summarise(diff_score =last(score_mean) - first(score_mean), diff_inse = last(inse_mean) - first(inse_mean))%>%ggplot(aes(x = diff_score, y = diff_inse)) +
+    geom_point()+
+  geom_text(aes(label = codigo_uf), size = 4, hjust = 0)+ggtitle("INSE vs Scores - 10/90 percentil by states")+
+  xlab("ENEM score GAP") +
+  ylab("INSE GAP") +
+  theme_classic()
+
+df%>%group_by(codigo_uf, SES_LEVEL_25)%>%
+  summarise(score_mean= mean(NU_NOTA_GERAL), inse_mean = mean(INSE))%>%
+  ungroup()%>%
+  group_by(codigo_uf)%>%
+  summarise(diff_score =last(score_mean) - first(score_mean), diff_inse = last(inse_mean) - first(inse_mean))%>%ggplot(aes(x = diff_score, y = diff_inse)) +
+    geom_point(size = 1)+
+  geom_text(aes(label = codigo_uf), size = 4,  hjust = 0, vjust = -1, color="red" )+ggtitle("INSE vs Scores - 25/75 percentil by states")+
+  xlab("ENEM scores gap") +
+  ylab("INSE gap") +
+  theme_classic()
+```
+
+Let's examine the evolution of some states that have lower ENEM score gaps. We have selected SP, SC, AL, and MT as examples.
+
+```{r, fig.show="hold", out.width="70%", fig.align = 'center'}
+
+limits<- df%>%group_by(codigo_uf,CO_ANO, SES_LEVEL_25)%>%
+  summarise(score_mean= mean(NU_NOTA_GERAL), inse_mean = mean(INSE))%>%
+  ungroup()%>%group_by(CO_ANO, codigo_uf)%>%mutate(score_mean_d= last(score_mean)-first(score_mean), inse_mean_d = (last(inse_mean)-first(inse_mean)))%>%
+  select(CO_ANO, codigo_uf,score_mean_d, inse_mean_d)%>%distinct_all()
+
+limits$is_last_year <- limits$CO_ANO == max(limits$CO_ANO)
+
+limits<- limits%>%filter(codigo_uf%in%c("SP", "SC","AL", "MT"))
+
+limits %>%
+  group_by(codigo_uf) %>%
+  ggplot(aes(x = score_mean_d, y = inse_mean_d, color = codigo_uf, group = codigo_uf)) +
+  geom_path(alpha=0.3)+
+  geom_point(aes(shape = is_last_year, size = 1)) +
+  scale_shape_manual(values = c(1, 21)) +
+  geom_text_repel(dt = filter(limits, is_last_year), aes(label = CO_ANO), size = 3, hjust = 0, direction = "x", box.padding = 0.3) +
+  ggtitle("INSE vs Scores - 25/75 percentil by states over time") +
+  xlab("ENEM score gap") +
+  ylab("INSE gap") +
+  theme_classic()
+
+```
+This graph is not simple to plot due to overlapping, but it is interesting that it shows that AL has been increasing the overall ENEM scores at the cost of increasing gaps, while SP has been decreasing their gaps in ENEM scores.
+
+# Statistical modeling
+
+The model is almost the same of original Paper, however without school average score.
+
+
+* Y_ijst = Overall score of students>schools>state>time 
+* SES_i = Student socioeconomic quantile (10 & 25)
+* (t ×SES_i) = Interaction with time
+* R_i= Race and _Gender_
+* W_jt = School features including _teacher features_
+* Mmt =  municipality features - only GDP
+* s = State fixed effects
+* t = Time fixed-effects
+
+The models analyzing trends in income inequality have student race (white-non-white) controlled in all models. Otherwise, the models analyzing trends of race inequality have always students' income per capita controlled for. For both models the remaining variables were added grouped stepwise. 
+
+```{r eval=FALSE, include=FALSE}
+## Variable of interest
+data$SES_LEVEL_10 = df$SES_LEVEL_10
+data$SES_LEVEL_25 = df$SES_LEVEL_25
+data$TP_COR_RACA = df$TP_COR_RACA
+
+#Interactions
+data$SES10_X_CO_ANO <- df$SES_LEVEL_10 * df$CO_ANO
+data$SES25_X_CO_ANO <- df$SES_LEVEL_25 * df$CO_ANO
+data$TP_COR_RACA_ANO <- df$TP_COR_RACA * df$CO_ANO
+
+#Year
+data$CO_ANO<- df$CO_ANO
+data$INSE<- df$INSE
+
+## y 
+data$y<-data$NU_NOTA_GERAL
+
+
+#Year fixed-effects with 2012 as reference
+data<- fastDummies::dummy_cols(data, select_columns = c("SES10_X_CO_ANO","SES25_X_CO_ANO"))
+data<- data%>%select(-c("SES10_X_CO_ANO","SES10_X_CO_ANO_0","SES10_X_CO_ANO_2012", "SES25_X_CO_ANO","SES25_X_CO_ANO_0","SES25_X_CO_ANO_2012"))
+data<- fastDummies::dummy_cols(data, select_columns = c("TP_COR_RACA_ANO"))
+data<- data%>%select(-c("TP_COR_RACA_ANO","TP_COR_RACA_ANO_0","TP_COR_RACA_ANO_2012"))
+
+
+rm("data1","data2","df_school","df1","df1_df2", "df2", "lasso", "data1", "p","p1","p2",
+   "sampled_data", "x")
+
+save(data,file = "~/data/run/final_data.RData")
+```
+
+```{r}
+#Load final data
+#load("~/data/run/final_data.RData")
+years_ses10<- colnames(data%>%select(starts_with("SES10_X_CO_ANO_")))
+years_ses25<- colnames(data%>%select(starts_with("SES25_X_CO_ANO_")))
+years_cor_raca<- colnames(data%>%select(starts_with("TP_COR_RACA_ANO_")))
+```
+
+# Results
+
+## 10/90 percentil - INSE
+
+```{r echo=FALSE}
+#Model 25/75 percentil
+models <- list()
+# Loop through the feature groups
+for (i in 1:length(features)) {
+  
+  # Define the features to use in this iteration
+  step_wise <- unlist(features[1:i])
+  variables<- c("SES_LEVEL_10","TP_COR_RACA",years_ses10, step_wise)
+  f1=as.formula(paste("y~", paste(variables, collapse="+")))
+  model<-lm(f1, data = data)
+  # Append the model to the list of models
+  models[[i]] <- model
+}
+
+pl <- c(
+  `(Intercept)` = "Intercept",
+  SES_LEVEL_10 = "Higher-SES",
+  TP_COR_RACA = "Race (White)", 
+  SES10_X_CO_ANO_2009 = "Gap 2009-2012", 
+  SES10_X_CO_ANO_2010 = "Gap 2010-2012", 
+  SES10_X_CO_ANO_2011 = "Gap 2011-2012", 
+  SES10_X_CO_ANO_2013 = "Gap 2013-2012", 
+  SES10_X_CO_ANO_2014 = "Gap 2014-2012", 
+  SES10_X_CO_ANO_2015 = "Gap 2015-2012", 
+  SES10_X_CO_ANO_2016 = "Gap 2016-2012", 
+  SES10_X_CO_ANO_2017 = "Gap 2017-2012", 
+  SES10_X_CO_ANO_2018 = "Gap 2018-2012", 
+  SES10_X_CO_ANO_2019 = "Gap 2019-2012", 
+  EDU_PAI = "Father Education",
+  EDU_MAE = "Mother Education",
+  NU_IDADE = "Age"
+  
+)
+
+#save(models, file= "~/data/run/models_race.RData")
+
+tab_model(models[[1]],models[[2]], models[[3]], models[[4]],models[[5]], models[[6]], models[[7]],auto.label = FALSE, show.ci = FALSE,pred.labels = pl,p.style = "stars",dv.labels = c("Student","Gender", "Avg. SES", "School", "Drop-out", "Mun.(PIB)", "States FE"), file = "table_inse_10")
+
+
+```
+
+
+## 25/75 percentil - INSE
+
+```{r eval=FALSE, include=FALSE}
+#Model 25/75 percentil
+models <- list()
+# Loop through the feature groups
+for (i in 1:length(features)) {
+  
+  # Define the features to use in this iteration
+  step_wise <- unlist(features[1:i])
+  variables<- c("SES_LEVEL_25","TP_COR_RACA",years_ses25, step_wise)
+  f1=as.formula(paste("y~", paste(variables, collapse="+")))
+  model<-lm(f1, data = data)
+  # Append the model to the list of models
+  models[[i]] <- model
+}
+
+pl <- c(
+  `(Intercept)` = "Intercept",
+  SES_LEVEL_25 = "Higher-SES",
+  TP_COR_RACA = "Race (White)", 
+  SES25_X_CO_ANO_2009 = "Gap 2009-2012", 
+  SES25_X_CO_ANO_2010 = "Gap 2010-2012", 
+  SES25_X_CO_ANO_2011 = "Gap 2011-2012", 
+  SES25_X_CO_ANO_2013 = "Gap 2013-2012", 
+  SES25_X_CO_ANO_2014 = "Gap 2014-2012", 
+  SES25_X_CO_ANO_2015 = "Gap 2015-2012", 
+  SES25_X_CO_ANO_2016 = "Gap 2016-2012", 
+  SES25_X_CO_ANO_2017 = "Gap 2017-2012", 
+  SES25_X_CO_ANO_2018 = "Gap 2018-2012", 
+  SES25_X_CO_ANO_2019 = "Gap 2019-2012", 
+  EDU_PAI = "Father Education",
+  EDU_MAE = "Mother Education",
+  NU_IDADE = "Age"
+  
+)
+
+#save(models, file= "~/data/run/models_race.RData")
+
+tab_model(models[[1]],models[[2]], models[[3]], models[[4]],models[[5]], models[[6]], models[[7]],auto.label = FALSE, show.ci = FALSE,pred.labels = pl,p.style = "stars",dv.labels = c("Student","Gender", "Avg. SES", "School", "Drop-out", "Mun.(PIB)", "States FE"), file = "table_inse_25")
+
+#save(models, file= "~/data/run/models_ses_25.RData")
+
+```
+
+
+### White vs non-white
+```{r eval=FALSE, include=FALSE}
+#Model race
+models <- list()
+
+# Loop through the feature groups
+for (i in 1:length(features)) {
+  
+  # Define the features to use in this iteration
+  step_wise <- unlist(features[1:i])
+  variables <- c("TP_COR_RACA", "INSE", years_cor_raca, step_wise)
+  f1 <- as.formula(paste("y ~ ", paste(variables, collapse = " + ")))
+  
+  # Fit the model
+  models[[i]] <- lm(f1, data = data)
+}
+pl <- c(
+  `(Intercept)` = "Intercept",
+  TP_COR_RACA = "Race (White)",
+  INSE = "INSE", 
+  TP_COR_RACA_ANO_2009 = "Gap 2009-2012", 
+  TP_COR_RACA_ANO_2010 = "Gap 2010-2012", 
+  TP_COR_RACA_ANO_2011 = "Gap 2011-2012", 
+  TP_COR_RACA_ANO_2013 = "Gap 2013-2012", 
+  TP_COR_RACA_ANO_2014 = "Gap 2014-2012", 
+  TP_COR_RACA_ANO_2015 = "Gap 2015-2012", 
+  TP_COR_RACA_ANO_2016 = "Gap 2016-2012", 
+  TP_COR_RACA_ANO_2017 = "Gap 2017-2012", 
+  TP_COR_RACA_ANO_2018 = "Gap 2018-2012", 
+  TP_COR_RACA_ANO_2019 = "Gap 2019-2012", 
+  EDU_PAI = "Father Education",
+  EDU_MAE = "Mother Education",
+  NU_IDADE = "Age"
+  
+)
+
+#save(models, file= "~/data/run/models_race.RData")
+
+tab_model(models[[1]],models[[2]], models[[3]], models[[4]],models[[5]], models[[6]], models[[7]],auto.label = FALSE, show.ci = FALSE,pred.labels = pl,p.style = "stars",dv.labels = c("Student","Gender", "Avg. SES", "School", "Drop-out", "Mun.(PIB)", "States FE"), file = "table_race")
+
+
+```
+# State differences - Conditinal analysis
+
+```{r, fig.height = 8}
+
+p<- df%>%group_by(codigo_uf)%>%summarise(codigo_uf = codigo_uf, REGIAO = REGIAO)%>%distinct_all()
+
+variables<- c("SES_LEVEL_10","TP_COR_RACA",years_ses10)
+f1=as.formula(paste("y~", paste(variables, collapse="+")))
+
+variables1<- c("SES_LEVEL_25","TP_COR_RACA",years_ses25)
+f2 <- as.formula(paste("y ~ ", paste(variables1, collapse = " + ")))
+
+variables <- c("TP_COR_RACA", "INSE", years_cor_raca)
+f3 <- as.formula(paste("y ~ ", paste(variables, collapse = " + ")))
+
+# Define a function to perform linear regression and return the desired coefficient
+linear_regression <- function(dt, f) {
+  lm_model <- lm(f, data = dt) # replace Score, A, B, C with your own variable names
+  #print(summary(lm_model))
+  #print(coef(lm_model)[13])
+  return(coef(lm_model)[13]) 
+}
+
+# Group the dataset by Category A and apply linear regression to each group
+for (i in features[[7]]){
+  filtered<- data%>%filter(!!sym(i) == 1)
+  filtered_year<- filtered%>%filter(CO_ANO == 2019)
+  for (m in 1:nrow(p)) {
+   # print(i)
+    #print(head(p1,27))
+    if (p$codigo_uf[m] == i) {
+      p$coef_ses_10[m] <- linear_regression(filtered, f1)
+      p$coef_ses_25[m] <- linear_regression(filtered, f2)
+      p$coef_raca[m] <- linear_regression(filtered, f3)
+      p$score[m]<- mean(filtered_year$y)
+    }
+  }
+}
+
+
+
+p1<- p %>% ggplot(aes(x = coef_ses_10, y = score, color = REGIAO)) +
+  geom_point(size = 0.1) +
+  geom_text(aes(label = codigo_uf), size = 5, hjust = 0) +
+  ggtitle("10/90th ") +
+  theme_classic() +
+  xlab("")+ylab("")+
+  theme(legend.position = "none")
+  
+
+p2<- p %>% ggplot(aes(x = coef_ses_25, y = score, color = REGIAO)) +
+  geom_point(size = 0.1) +
+  geom_text(aes(label = codigo_uf), size = 5, hjust = 0) +
+  ggtitle("25/75th") +
+  theme_classic() +
+  xlab("")+ylab("")+
+  theme(legend.position = "none")
+
+p3<- p %>% ggplot(aes(x = coef_raca, y = score, color = REGIAO)) +
+  geom_point(size = 0.1) +
+  geom_text(aes(label = codigo_uf), size = 5, hjust = 0) +
+  ggtitle("White/non-white") +
+   xlab("")+ylab("")+
+  theme_classic() +
+  theme(legend.position = "none",)
+
+yleft = richtext_grob("Gain in scores from 2012 to 2019 (SD from 2012)", rot=90)
+bottom = richtext_grob("GAP 2012 - 2019 (coefficient of model 3)")
+dev.off()
+grid.arrange(p1, p2, p3, ncol=2, left = yleft, bottom = bottom)
+
+# View the updated dataset
+#head(data)
+
+```
+
+# Discussion
+
+The results of this study are quite different from what was found in elementary school, which generally showed a widening of the performance gap between students from different social classes. For both percentiles and race, the results are similar and demonstrate a decrease in inequality over time when compared to the year 2019. For both INSE percentiles, the gap decreases in relation to 2009 for all variable sets from 2010 to 2016, with the largest drops seen starting in 2012.
+
+In terms of the importance of variable groups, gender is relatively unimportant, and the average income of the school reduces the effect of individual income by half. Variables related to the school are relevant, but not determinative.
+
